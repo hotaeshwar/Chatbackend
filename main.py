@@ -12,9 +12,11 @@ import uuid
 
 app = FastAPI(title="Bid Chat API - Production")
 
+# Create upload directory
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# CORS Configuration - Must be added BEFORE mounting static files
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -30,8 +32,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
+# Mount static files AFTER CORS middleware
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 class ConnectionManager:
@@ -239,19 +243,18 @@ manager = ConnectionManager()
 async def root():
     return {
         "name": "Bid Chat API - Production",
-        "version": "4.0.0",
+        "version": "4.0.1",
         "status": "running",
         "domain": "chat.buildingindiadigital.com",
         "active_users": len(manager.active_connections),
         "total_rooms": len(manager.room_members),
-        "security": "Messages only visible to users logged in when sent",
+        "cors": "enabled",
         "features": [
             "public_chat", 
             "private_chat", 
             "group_chat", 
             "file_sharing", 
-            "location_sharing",
-            "time_based_message_filtering"
+            "location_sharing"
         ]
     }
 
@@ -265,19 +268,25 @@ async def health_check():
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
+    """
+    Upload file endpoint with CORS support
+    """
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="No filename provided")
         
+        # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]
         file_extension = os.path.splitext(file.filename)[1]
         safe_filename = f"{timestamp}_{unique_id}{file_extension}"
         file_path = UPLOAD_DIR / safe_filename
         
+        # Save file
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
+        # Determine file type
         file_type = "file"
         content_type = file.content_type or ""
         
@@ -293,7 +302,7 @@ async def upload_file(file: UploadFile = File(...)):
         file_size = os.path.getsize(file_path)
         file_url = f"https://chat.buildingindiadigital.com/uploads/{safe_filename}"
         
-        print(f"File uploaded: {safe_filename} ({file_size} bytes)")
+        print(f"✓ File uploaded: {safe_filename} ({file_size} bytes)")
         
         return {
             "success": True,
@@ -306,11 +315,12 @@ async def upload_file(file: UploadFile = File(...)):
         }
     
     except Exception as e:
-        print(f"Upload error: {e}")
+        print(f"✗ Upload error: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.get("/uploads/{filename}")
 async def get_file(filename: str):
+    """Serve uploaded files"""
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -318,6 +328,7 @@ async def get_file(filename: str):
 
 @app.post("/rooms/private")
 async def create_private_chat(user1: str, user2: str):
+    """Create or get existing private chat room"""
     if not user1 or not user2:
         raise HTTPException(status_code=400, detail="Both users required")
     
@@ -337,6 +348,7 @@ async def create_private_chat(user1: str, user2: str):
 
 @app.post("/rooms/group")
 async def create_group_chat(members: List[str], name: str = None):
+    """Create a new group chat room"""
     if len(members) < 2:
         raise HTTPException(status_code=400, detail="At least 2 members required")
     
@@ -353,6 +365,7 @@ async def create_group_chat(members: List[str], name: str = None):
 
 @app.get("/rooms/{user_id}")
 async def get_user_rooms(user_id: str):
+    """Get all rooms for a user"""
     rooms = manager.get_user_rooms(user_id)
     return {
         "success": True,
@@ -363,6 +376,7 @@ async def get_user_rooms(user_id: str):
 
 @app.get("/rooms/{room_id}/history")
 async def get_room_history(room_id: str, user_id: str, limit: int = 100):
+    """Get message history for a room"""
     if not manager.verify_room_access(user_id, room_id):
         raise HTTPException(status_code=403, detail="Access denied to this room")
     
@@ -371,12 +385,12 @@ async def get_room_history(room_id: str, user_id: str, limit: int = 100):
         "success": True,
         "room_id": room_id,
         "messages": messages,
-        "count": len(messages),
-        "filtered": "Only messages sent after your first login"
+        "count": len(messages)
     }
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """WebSocket connection for real-time chat"""
     await websocket.accept()
     
     if not user_id or len(user_id.strip()) == 0:
@@ -387,6 +401,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await manager.connect(user_id, websocket)
     
     try:
+        # Send welcome message
         await manager.send_to_user(user_id, {
             "type": "connection",
             "status": "connected",
@@ -396,6 +411,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             "login_time": manager.get_user_login_time(user_id).isoformat()
         })
         
+        # Send user's rooms
         user_rooms = manager.get_user_rooms(user_id)
         await manager.send_to_user(user_id, {
             "type": "rooms_list",
@@ -403,6 +419,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             "count": len(user_rooms)
         })
         
+        # Send public chat history
         public_history = manager.get_room_history("public", user_id, limit=100)
         if public_history:
             await manager.send_to_user(user_id, {
@@ -412,6 +429,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 "count": len(public_history)
             })
         
+        # Send history for other rooms
         for room_id in manager.user_rooms.get(user_id, set()):
             if room_id != "public":
                 room_history = manager.get_room_history(room_id, user_id, limit=100)
@@ -423,8 +441,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "count": len(room_history)
                     })
         
+        # Broadcast updated user list
         await manager.broadcast_user_list()
         
+        # Notify others about new user
         await manager.broadcast_to_room("public", {
             "type": "user_joined",
             "user_id": user_id,
@@ -432,6 +452,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             "timestamp": datetime.now().isoformat()
         }, exclude_from_history=True)
         
+        # Message handling loop
         while True:
             data = await websocket.receive_text()
             
@@ -443,6 +464,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             
             room_id = message_data.get("room_id", "public")
             
+            # Verify room access
             if not manager.verify_room_access(user_id, room_id):
                 await manager.send_to_user(user_id, {
                     "type": "error",
@@ -461,6 +483,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 "timestamp": datetime.now().isoformat()
             }
             
+            # Handle different message types
             if message_type == "text":
                 content = message_data.get("content", "").strip()
                 if content:
@@ -495,6 +518,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         manager.disconnect(user_id)
         await manager.broadcast_user_list()
         
+        # Notify others about user leaving
         await manager.broadcast_to_room("public", {
             "type": "user_left",
             "user_id": user_id,
@@ -504,6 +528,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 
 @app.get("/users/online")
 async def get_online_users():
+    """Get list of currently online users"""
     return {
         "success": True,
         "online_users": list(manager.active_connections.keys()),
