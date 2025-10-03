@@ -22,8 +22,10 @@ app.add_middleware(
         "https://chatapp.buildingindiadigital.com",
         "http://chatapp.buildingindiadigital.com",
         "http://localhost:3000",
+        "http://localhost:5173",
         "http://localhost:8000",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "http://127.0.0.1:8000"
     ],
     allow_credentials=True,
@@ -40,23 +42,22 @@ class ConnectionManager:
         self.user_rooms: Dict[str, Set[str]] = {}
         self.room_members: Dict[str, Set[str]] = {"public": set()}
         self.room_metadata: Dict[str, dict] = {}
-        self.user_login_times: Dict[str, datetime] = {}  # Track when users first logged in
+        self.user_login_times: Dict[str, datetime] = {}
     
     async def connect(self, user_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_connections[user_id] = websocket
         
-        # Record first login time for this user
         if user_id not in self.user_login_times:
             self.user_login_times[user_id] = datetime.now()
-            print(f"✓ First time login recorded for '{user_id}'")
+            print(f"First time login recorded for '{user_id}'")
         
         if user_id not in self.user_rooms:
             self.user_rooms[user_id] = set()
         self.user_rooms[user_id].add("public")
         self.room_members["public"].add(user_id)
         
-        print(f"✓ '{user_id}' connected. Online: {len(self.active_connections)}")
+        print(f"'{user_id}' connected. Online: {len(self.active_connections)}")
     
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
@@ -68,7 +69,7 @@ class ConnectionManager:
                         self.room_members[room_id].discard(user_id)
                 del self.user_rooms[user_id]
             
-            print(f"✗ '{user_id}' disconnected. Online: {len(self.active_connections)}")
+            print(f"'{user_id}' disconnected. Online: {len(self.active_connections)}")
     
     def create_room(self, room_type: str, members: List[str], room_name: str = None) -> str:
         room_id = str(uuid.uuid4())
@@ -88,7 +89,7 @@ class ConnectionManager:
             "members": members
         }
         
-        print(f"✓ Created {room_type} room: {room_id} with {len(members)} members")
+        print(f"Created {room_type} room: {room_id} with {len(members)} members")
         return room_id
     
     def get_or_create_private_room(self, user1: str, user2: str) -> str:
@@ -101,13 +102,11 @@ class ConnectionManager:
         return self.create_room("private", [user1, user2])
     
     def verify_room_access(self, user_id: str, room_id: str) -> bool:
-        """Verify user has access to a specific room - CRITICAL SECURITY CHECK"""
         if room_id not in self.room_members:
             return False
         return user_id in self.room_members[room_id]
     
     def get_user_login_time(self, user_id: str) -> datetime:
-        """Get when user first logged in"""
         return self.user_login_times.get(user_id, datetime.now())
     
     async def join_room(self, user_id: str, room_id: str):
@@ -133,7 +132,6 @@ class ConnectionManager:
         return True
     
     async def broadcast_to_room(self, room_id: str, message: dict, exclude_from_history: bool = False):
-        """Send message ONLY to users in specific room - SECURE ISOLATION"""
         if not exclude_from_history:
             if room_id not in self.message_history:
                 self.message_history[room_id] = []
@@ -161,7 +159,6 @@ class ConnectionManager:
             self.disconnect(user_id)
     
     async def send_to_user(self, user_id: str, message: dict):
-        """Send message to specific user only"""
         if user_id in self.active_connections:
             try:
                 await self.active_connections[user_id].send_json(message)
@@ -170,7 +167,6 @@ class ConnectionManager:
                 self.disconnect(user_id)
     
     async def broadcast_user_list(self):
-        """Send online users list ONLY to public room"""
         user_list = list(self.active_connections.keys())
         message = {
             "type": "online_users",
@@ -181,43 +177,33 @@ class ConnectionManager:
         await self.broadcast_to_room("public", message, exclude_from_history=True)
     
     def get_room_history(self, room_id: str, user_id: str, limit: int = 100):
-        """Get message history - WITH ACCESS VERIFICATION AND TIME-BASED FILTERING"""
-        # SECURITY: Verify user has access to this room
         if not self.verify_room_access(user_id, room_id):
             return []
         
         if room_id not in self.message_history:
             return []
         
-        # Get user's first login time
         user_login_time = self.get_user_login_time(user_id)
         
-        # Filter messages: only show messages sent AFTER user first logged in
         filtered_messages = []
         for msg in self.message_history[room_id]:
-            # Parse message timestamp
             msg_timestamp_str = msg.get("timestamp") or msg.get("stored_at")
             if msg_timestamp_str:
                 try:
                     msg_timestamp = datetime.fromisoformat(msg_timestamp_str.replace('Z', '+00:00'))
-                    # Remove timezone info for comparison if needed
                     if msg_timestamp.tzinfo:
                         msg_timestamp = msg_timestamp.replace(tzinfo=None)
                     
-                    # Only include messages sent AFTER user logged in
                     if msg_timestamp >= user_login_time:
                         filtered_messages.append(msg)
                 except:
-                    # If timestamp parsing fails, include the message
                     filtered_messages.append(msg)
             else:
-                # If no timestamp, include the message
                 filtered_messages.append(msg)
         
         return filtered_messages[-limit:]
     
     def get_user_rooms(self, user_id: str):
-        """Get all rooms a user is in"""
         if user_id not in self.user_rooms:
             return []
         
@@ -257,7 +243,7 @@ async def root():
         "name": "Bid Chat API - Production",
         "version": "4.0.0",
         "status": "running",
-        "domain": "chat.buildingindiadigital.com",
+        "domain": "chatapp.buildingindiadigital.com",
         "active_users": len(manager.active_connections),
         "total_rooms": len(manager.room_members),
         "security": "Messages only visible to users logged in when sent",
@@ -307,10 +293,9 @@ async def upload_file(file: UploadFile = File(...)):
             file_type = "document"
         
         file_size = os.path.getsize(file_path)
-        # Use your production domain
-        file_url = f"https://chat.buildingindiadigital.com/uploads/{safe_filename}"
+        file_url = f"https://chatapp.buildingindiadigital.com/uploads/{safe_filename}"
         
-        print(f"✓ File uploaded: {safe_filename} ({file_size} bytes)")
+        print(f"File uploaded: {safe_filename} ({file_size} bytes)")
         
         return {
             "success": True,
@@ -323,7 +308,7 @@ async def upload_file(file: UploadFile = File(...)):
         }
     
     except Exception as e:
-        print(f"✗ Upload error: {e}")
+        print(f"Upload error: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.get("/uploads/{filename}")
@@ -335,7 +320,6 @@ async def get_file(filename: str):
 
 @app.post("/rooms/private")
 async def create_private_chat(user1: str, user2: str):
-    """Create or get private chat room - SECURE"""
     if not user1 or not user2:
         raise HTTPException(status_code=400, detail="Both users required")
     
@@ -355,7 +339,6 @@ async def create_private_chat(user1: str, user2: str):
 
 @app.post("/rooms/group")
 async def create_group_chat(members: List[str], name: str = None):
-    """Create group chat room"""
     if len(members) < 2:
         raise HTTPException(status_code=400, detail="At least 2 members required")
     
@@ -372,7 +355,6 @@ async def create_group_chat(members: List[str], name: str = None):
 
 @app.get("/rooms/{user_id}")
 async def get_user_rooms(user_id: str):
-    """Get all rooms for a user"""
     rooms = manager.get_user_rooms(user_id)
     return {
         "success": True,
@@ -383,11 +365,9 @@ async def get_user_rooms(user_id: str):
 
 @app.get("/rooms/{room_id}/history")
 async def get_room_history(room_id: str, user_id: str, limit: int = 100):
-    """Get message history - WITH SECURITY CHECK AND TIME FILTERING"""
     if not manager.verify_room_access(user_id, room_id):
         raise HTTPException(status_code=403, detail="Access denied to this room")
     
-    # Messages are automatically filtered by user's login time
     messages = manager.get_room_history(room_id, user_id, limit)
     return {
         "success": True,
@@ -423,7 +403,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             "count": len(user_rooms)
         })
         
-        # Send PUBLIC chat history - filtered by login time
         public_history = manager.get_room_history("public", user_id, limit=100)
         if public_history:
             await manager.send_to_user(user_id, {
@@ -434,7 +413,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 "note": "Only showing messages sent after your first login"
             })
         
-        # Send PRIVATE chat histories - each filtered by login time
         for room_id in manager.user_rooms.get(user_id, set()):
             if room_id != "public":
                 room_history = manager.get_room_history(room_id, user_id, limit=100)
@@ -473,7 +451,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     "message": "Access denied to this room",
                     "room_id": room_id
                 })
-                print(f"⚠️ SECURITY: {user_id} attempted to access unauthorized room {room_id}")
+                print(f"SECURITY: {user_id} attempted to access unauthorized room {room_id}")
                 continue
             
             message_type = message_data.get("message_type", "text")
@@ -491,7 +469,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 if content:
                     message["content"] = content
                     room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"💬 [{room_type}:{room_id[:8]}] {user_id}: {content}")
+                    print(f"[{room_type}:{room_id[:8]}] {user_id}: {content}")
                     await manager.broadcast_to_room(room_id, message)
             
             elif message_type == "location":
@@ -504,7 +482,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     message["longitude"] = float(longitude)
                     message["address"] = address
                     room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"📍 [{room_type}:{room_id[:8]}] {user_id} shared location")
+                    print(f"[{room_type}:{room_id[:8]}] {user_id} shared location")
                     await manager.broadcast_to_room(room_id, message)
             
             elif message_type in ["image", "video", "audio", "document", "file"]:
@@ -515,7 +493,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     message["file_size"] = message_data.get("file_size", 0)
                     message["caption"] = message_data.get("caption", "")
                     room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"📎 [{room_type}:{room_id[:8]}] {user_id} shared {message_type}")
+                    print(f"[{room_type}:{room_id[:8]}] {user_id} shared {message_type}")
                     await manager.broadcast_to_room(room_id, message)
     
     except WebSocketDisconnect:
@@ -544,16 +522,16 @@ async def get_online_users():
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("🔒 Bid Chat Server - PRODUCTION v4.0")
+    print("Bid Chat Server - PRODUCTION v4.0")
     print("=" * 60)
-    print("🌐 Domain: chat.buildingindiadigital.com")
-    print("✓ Messages only visible after user login")
-    print("✓ Private chats completely isolated from public")
-    print("✓ Time-based message filtering per user")
-    print("✓ No old messages visible to new users")
+    print("Domain: chatapp.buildingindiadigital.com")
+    print("Messages only visible after user login")
+    print("Private chats completely isolated from public")
+    print("Time-based message filtering per user")
+    print("No old messages visible to new users")
     print("=" * 60)
-    print("📁 Upload Directory:", UPLOAD_DIR.absolute())
-    print("📡 WebSocket: wss://chat.buildingindiadigital.com/ws/{user_id}")
-    print("🌐 API Docs: https://chat.buildingindiadigital.com/docs")
+    print("Upload Directory:", UPLOAD_DIR.absolute())
+    print("WebSocket: wss://chatapp.buildingindiadigital.com/ws/{user_id}")
+    print("API Docs: https://chatapp.buildingindiadigital.com/docs")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
