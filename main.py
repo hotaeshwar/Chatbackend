@@ -380,6 +380,7 @@ async def get_room_history(room_id: str, user_id: str, limit: int = 100):
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     if not user_id or len(user_id.strip()) == 0:
+        await websocket.accept()
         await websocket.close(code=1008, reason="Invalid user_id")
         return
     
