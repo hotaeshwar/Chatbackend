@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -9,6 +9,7 @@ import os
 import shutil
 from pathlib import Path
 import uuid
+import aiofiles
 
 app = FastAPI(title="Bid Chat API - Production")
 
@@ -16,12 +17,14 @@ app = FastAPI(title="Bid Chat API - Production")
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# CORS Configuration - Must be added BEFORE mounting static files
+# CORS Configuration - MUST be first
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://chatapp.buildingindiadigital.com",
         "http://chatapp.buildingindiadigital.com",
+        "https://chat.buildingindiadigital.com",
+        "http://chat.buildingindiadigital.com",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8000",
@@ -30,12 +33,13 @@ app.add_middleware(
         "http://127.0.0.1:8000"
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
-    expose_headers=["*"]
+    expose_headers=["*"],
+    max_age=3600
 )
 
-# Mount static files AFTER CORS middleware
+# Mount static files AFTER CORS
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 class ConnectionManager:
@@ -243,17 +247,18 @@ manager = ConnectionManager()
 async def root():
     return {
         "name": "Bid Chat API - Production",
-        "version": "4.0.1",
+        "version": "5.0.0",
         "status": "running",
         "domain": "chat.buildingindiadigital.com",
         "active_users": len(manager.active_connections),
         "total_rooms": len(manager.room_members),
         "cors": "enabled",
+        "max_upload_size": "unlimited",
         "features": [
             "public_chat", 
             "private_chat", 
             "group_chat", 
-            "file_sharing", 
+            "large_file_upload",
             "location_sharing"
         ]
     }
@@ -266,12 +271,22 @@ async def health_check():
         "active_connections": len(manager.active_connections)
     }
 
+@app.options("/upload")
+async def upload_options():
+    """Handle preflight CORS requests for upload"""
+    return {"status": "ok"}
+
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(request: Request, file: UploadFile = File(...)):
     """
-    Upload file endpoint with CORS support
+    Upload file endpoint - handles files of ANY size
+    No size limit imposed
     """
     try:
+        # Log request details
+        print(f"Upload request from: {request.client.host}")
+        print(f"File: {file.filename}, Content-Type: {file.content_type}")
+        
         if not file.filename:
             raise HTTPException(status_code=400, detail="No filename provided")
         
@@ -282,9 +297,14 @@ async def upload_file(file: UploadFile = File(...)):
         safe_filename = f"{timestamp}_{unique_id}{file_extension}"
         file_path = UPLOAD_DIR / safe_filename
         
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Save file using async file handling for large files
+        chunk_size = 1024 * 1024  # 1MB chunks
+        total_size = 0
+        
+        async with aiofiles.open(file_path, 'wb') as f:
+            while chunk := await file.read(chunk_size):
+                await f.write(chunk)
+                total_size += len(chunk)
         
         # Determine file type
         file_type = "file"
@@ -299,10 +319,11 @@ async def upload_file(file: UploadFile = File(...)):
         elif "pdf" in content_type or "document" in content_type or content_type.startswith("application/"):
             file_type = "document"
         
-        file_size = os.path.getsize(file_path)
         file_url = f"https://chat.buildingindiadigital.com/uploads/{safe_filename}"
         
-        print(f"✓ File uploaded: {safe_filename} ({file_size} bytes)")
+        # Convert size to human readable
+        size_mb = total_size / (1024 * 1024)
+        print(f"✓ File uploaded: {safe_filename} ({size_mb:.2f} MB)")
         
         return {
             "success": True,
@@ -310,12 +331,16 @@ async def upload_file(file: UploadFile = File(...)):
             "saved_filename": safe_filename,
             "file_url": file_url,
             "file_type": file_type,
-            "file_size": file_size,
-            "content_type": content_type
+            "file_size": total_size,
+            "file_size_mb": round(size_mb, 2),
+            "content_type": content_type,
+            "timestamp": datetime.now().isoformat()
         }
     
     except Exception as e:
-        print(f"✗ Upload error: {e}")
+        print(f"✗ Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.get("/uploads/{filename}")
@@ -537,4 +562,11 @@ async def get_online_users():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=300,
+        limit_concurrency=1000,
+        limit_max_requests=10000
+    )
