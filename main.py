@@ -15,7 +15,6 @@ app = FastAPI(title="Bid Chat API - Production")
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Production CORS with your domain
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,7 +44,6 @@ class ConnectionManager:
         self.user_login_times: Dict[str, datetime] = {}
     
     async def connect(self, user_id: str, websocket: WebSocket):
-        await websocket.accept()
         self.active_connections[user_id] = websocket
         
         if user_id not in self.user_login_times:
@@ -243,7 +241,7 @@ async def root():
         "name": "Bid Chat API - Production",
         "version": "4.0.0",
         "status": "running",
-        "domain": "chatapp.buildingindiadigital.com",
+        "domain": "chat.buildingindiadigital.com",
         "active_users": len(manager.active_connections),
         "total_rooms": len(manager.room_members),
         "security": "Messages only visible to users logged in when sent",
@@ -293,7 +291,7 @@ async def upload_file(file: UploadFile = File(...)):
             file_type = "document"
         
         file_size = os.path.getsize(file_path)
-        file_url = f"https://chatapp.buildingindiadigital.com/uploads/{safe_filename}"
+        file_url = f"https://chat.buildingindiadigital.com/uploads/{safe_filename}"
         
         print(f"File uploaded: {safe_filename} ({file_size} bytes)")
         
@@ -379,8 +377,9 @@ async def get_room_history(room_id: str, user_id: str, limit: int = 100):
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    await websocket.accept()
+    
     if not user_id or len(user_id.strip()) == 0:
-        await websocket.accept()
         await websocket.close(code=1008, reason="Invalid user_id")
         return
     
@@ -410,8 +409,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 "type": "chat_history",
                 "room_id": "public",
                 "messages": public_history,
-                "count": len(public_history),
-                "note": "Only showing messages sent after your first login"
+                "count": len(public_history)
             })
         
         for room_id in manager.user_rooms.get(user_id, set()):
@@ -422,8 +420,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "type": "chat_history",
                         "room_id": room_id,
                         "messages": room_history,
-                        "count": len(room_history),
-                        "note": "Only showing messages sent after your first login"
+                        "count": len(room_history)
                     })
         
         await manager.broadcast_user_list()
@@ -452,7 +449,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     "message": "Access denied to this room",
                     "room_id": room_id
                 })
-                print(f"SECURITY: {user_id} attempted to access unauthorized room {room_id}")
                 continue
             
             message_type = message_data.get("message_type", "text")
@@ -469,8 +465,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 content = message_data.get("content", "").strip()
                 if content:
                     message["content"] = content
-                    room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"[{room_type}:{room_id[:8]}] {user_id}: {content}")
                     await manager.broadcast_to_room(room_id, message)
             
             elif message_type == "location":
@@ -482,8 +476,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     message["latitude"] = float(latitude)
                     message["longitude"] = float(longitude)
                     message["address"] = address
-                    room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"[{room_type}:{room_id[:8]}] {user_id} shared location")
                     await manager.broadcast_to_room(room_id, message)
             
             elif message_type in ["image", "video", "audio", "document", "file"]:
@@ -493,8 +485,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     message["filename"] = message_data.get("filename", "file")
                     message["file_size"] = message_data.get("file_size", 0)
                     message["caption"] = message_data.get("caption", "")
-                    room_type = manager.room_metadata.get(room_id, {}).get("type", "public")
-                    print(f"[{room_type}:{room_id[:8]}] {user_id} shared {message_type}")
                     await manager.broadcast_to_room(room_id, message)
     
     except WebSocketDisconnect:
@@ -522,17 +512,4 @@ async def get_online_users():
 
 if __name__ == "__main__":
     import uvicorn
-    print("=" * 60)
-    print("Bid Chat Server - PRODUCTION v4.0")
-    print("=" * 60)
-    print("Domain: chatapp.buildingindiadigital.com")
-    print("Messages only visible after user login")
-    print("Private chats completely isolated from public")
-    print("Time-based message filtering per user")
-    print("No old messages visible to new users")
-    print("=" * 60)
-    print("Upload Directory:", UPLOAD_DIR.absolute())
-    print("WebSocket: wss://chatapp.buildingindiadigital.com/ws/{user_id}")
-    print("API Docs: https://chatapp.buildingindiadigital.com/docs")
-    print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
