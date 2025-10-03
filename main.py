@@ -19,8 +19,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://chat.buildingindiadigital.com",
-        "http://chat.buildingindiadigital.com",
+        "https://chatapp.buildingindiadigital.com",
+        "http://chatapp.buildingindiadigital.com",
         "http://localhost:3000",
         "http://localhost:8000",
         "http://127.0.0.1:3000",
